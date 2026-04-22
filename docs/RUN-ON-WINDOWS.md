@@ -1,315 +1,312 @@
-# Running Resume Builder AI locally on Windows (Docker)
+# Running Resume Builder AI locally on Windows (no Docker)
 
-This guide walks you from a fresh Windows 10/11 machine to a working local
-install of the resume builder with a **local, free, offline** AI backend
-(Ollama) — no Cloudflare account, no API keys, no cloud calls.
+Native setup — just Node.js, Git, and (optionally) Ollama installed directly on
+Windows. Nothing runs in containers.
 
-There are two paths:
+By the end you'll have:
 
-| Path | When to pick it | AI provider |
-|---|---|---|
-| **A. Simple (recommended)** | You just want it to work. Browser talks to Ollama directly. | `Ollama on my machine` |
-| **B. Full stack with the worker** | You want to mirror the production edge-proxy locally. | Worker → Ollama container |
+- The SPA at **http://localhost:5173**
+- Free, offline AI via **Ollama for Windows** at `http://localhost:11434`
+
+A separate doc covers the Docker flow: [`RUN-ON-WINDOWS-DOCKER.md`](RUN-ON-WINDOWS-DOCKER.md).
 
 ---
 
-## 0. Prerequisites
+## 1. Install prerequisites
 
-1. **Windows 10 version 2004+ or Windows 11** (64-bit).
-2. **WSL 2** — open PowerShell as Administrator:
-   ```powershell
-   wsl --install
-   ```
-   Reboot if prompted, then make sure the default version is 2:
-   ```powershell
-   wsl --set-default-version 2
-   ```
-3. **Docker Desktop for Windows** — <https://www.docker.com/products/docker-desktop/>. During setup, keep "Use WSL 2 based engine" enabled. Launch it once and wait for the whale icon to go steady.
-4. **Git for Windows** — <https://git-scm.com/download/win>.
-5. (Optional, GPU users) NVIDIA driver + the CUDA-capable Docker Desktop setting enabled. Ollama will automatically use the GPU if exposed.
-
-Verify in PowerShell:
+### 1.1 Node.js 20+
+Download the **LTS (20.x or newer)** installer from <https://nodejs.org/> and
+run it with defaults. In a fresh PowerShell window verify:
 
 ```powershell
-docker --version
-docker compose version
-git --version
+node --version   # should print v20.x.x or higher
+npm --version
 ```
+
+> If you manage multiple Node versions, use **nvm-windows**
+> (<https://github.com/coreybutler/nvm-windows>) and
+> `nvm install 20 && nvm use 20`.
+
+### 1.2 Git for Windows
+Download from <https://git-scm.com/download/win>, run the installer.
+
+Before cloning, normalize line endings so shell scripts stay LF-clean:
+
+```powershell
+git config --global core.autocrlf input
+```
+
+### 1.3 Ollama for Windows (optional but recommended)
+Only needed if you want the free local AI backend. Download the installer from
+<https://ollama.com/download/windows> and run it. Ollama runs as a background
+service and a small tray icon.
+
+Verify:
+
+```powershell
+ollama --version
+ollama list
+```
+
+You can skip this step if you plan to point the app at a cloud provider
+(Gemini / Groq / OpenAI / Anthropic) via a deployed worker instead.
 
 ---
 
-## 1. Clone the repo
+## 2. Clone and install
 
-Open PowerShell in a directory where you want the project, then:
+In PowerShell, in whatever folder you use for code:
 
 ```powershell
 git clone https://github.com/shanthsp2002/resumebuilderai.git
 cd resumebuilderai
 git checkout claude/ai-resume-builder-fkqHK
+npm install
 ```
 
-> **Line-endings tip:** Git on Windows may convert LF to CRLF which breaks the
-> shell scripts inside Linux containers. Either run
-> `git config --global core.autocrlf input` before cloning, or add a
-> `.gitattributes` with `* text=auto eol=lf`.
+The install takes ~30 s and writes a local `node_modules/`.
 
 ---
 
-## Path A — Simple: browser → Ollama (no worker)
-
-This is the fastest path. It uses the client-side "Ollama on my machine"
-provider, which is already built into the app.
-
-### A.1 Start the containers
-
-From the repo root in PowerShell:
+## 3. Start the app
 
 ```powershell
-docker compose up
+npm run dev
 ```
 
-This starts two services:
+Vite prints something like:
 
-- `web` — Vite dev server on **http://localhost:5173**
-- `ollama` — Ollama daemon on **http://localhost:11434**
-
-The first run will take a couple of minutes while `npm install` runs inside the
-container (its `node_modules` is cached in a named volume so subsequent boots
-are fast). You'll see Vite print the URL when it's ready.
-
-### A.2 Pull a model
-
-In a **second** PowerShell window, pull a small, fast model into the Ollama
-container:
-
-```powershell
-docker compose exec ollama ollama pull llama3.1:8b
+```
+  VITE v5.x  ready in 480 ms
+  ➜  Local:   http://localhost:5173/
 ```
 
-Other good picks:
+Open that URL in your browser. You should see the split-screen editor with
+the live PDF preview on the right.
 
-| Model | Size | Notes |
-|---|---|---|
-| `llama3.1:8b` | ~4.7 GB | Good quality, works on 16 GB CPU-only machines |
-| `qwen2.5:7b`  | ~4.4 GB | Often writes better bullets than llama3.1 |
-| `phi3.5:3.8b` | ~2.2 GB | Fastest, works on 8 GB RAM |
-| `llama3.1:70b`| ~40 GB  | Best quality, needs a serious GPU |
-
-Verify:
-
-```powershell
-docker compose exec ollama ollama list
-```
-
-### A.3 Point the app at local Ollama
-
-1. Open **http://localhost:5173** in your browser.
-2. Click **AI: Auto** in the top-right toolbar.
-3. Set **Provider** = `Ollama on my machine (local)`.
-4. Leave **Local Ollama URL** as `http://localhost:11434`.
-5. Set **Local model** to whichever tag you pulled (e.g. `llama3.1:8b`).
-6. Click **Done**.
-
-Try the "Enhance with AI" button on the summary or an experience bullet. First
-generation warms the model (can take 20–60 s on CPU). Subsequent calls are
-fast.
-
-### A.4 Stop / restart
-
-```powershell
-docker compose down        # stop containers, keep the model cache
-docker compose down -v     # also wipe the downloaded model + node_modules
-docker compose up -d       # background mode
-docker compose logs -f web # tail logs
-```
+Stop the dev server with **Ctrl+C**.
 
 ---
 
-## Path B — Full stack: worker + Ollama
+## 4. Wire up local AI (Ollama)
 
-Use this when you want the local setup to look exactly like production (SPA →
-edge worker → Ollama). The worker runs via `wrangler dev` inside a container
-and uses `wrangler.dev.toml` so it does **not** require a Cloudflare account
-login.
+### 4.1 Pull a model
 
-### B.1 Start everything
+Pick one. `llama3.1:8b` is a solid default on most laptops; `phi3.5:3.8b` is
+the fastest on an 8 GB machine.
 
 ```powershell
-docker compose --profile worker up
+ollama pull llama3.1:8b
+# optional alternatives:
+# ollama pull qwen2.5:7b
+# ollama pull phi3.5:3.8b
 ```
 
-Services:
-
-- `web` on **http://localhost:5173**
-- `worker` on **http://localhost:8787** (proxied via Vite at `/api/*`)
-- `ollama` on **http://localhost:11434**
-
-### B.2 Pull a model (same as A.2)
+Check it's available:
 
 ```powershell
-docker compose exec ollama ollama pull llama3.1:8b
+ollama list
 ```
 
-### B.3 Use it
+### 4.2 Allow the browser to talk to Ollama
+
+Ollama blocks cross-origin requests by default. The app's dev server runs on
+`http://localhost:5173` and needs to call `http://localhost:11434`, so you
+must whitelist origins.
+
+**Persistent (recommended):**
+
+1. Press **Win + R**, type `sysdm.cpl`, press Enter.
+2. **Advanced → Environment Variables…**
+3. Under **User variables**, click **New…**
+   - Name: `OLLAMA_ORIGINS`
+   - Value: `*`
+4. Click **OK** out of all dialogs.
+5. Right-click the Ollama tray icon → **Quit Ollama**, then relaunch it from
+   the Start menu. The new env var only takes effect on relaunch.
+
+**Temporary (one shell only):**
+
+```powershell
+# In PowerShell, run Ollama manually instead of as a service:
+$env:OLLAMA_ORIGINS = "*"
+ollama serve
+```
+
+Leave that window open while you use the app.
+
+### 4.3 Point the app at local Ollama
 
 1. Open **http://localhost:5173**.
-2. In **AI Settings**, set **Provider** = `Auto (server default)` — the worker
-   is pre-configured with `PROVIDER=ollama` via `wrangler.dev.toml`, so the
-   server default is already Ollama.
-3. Optionally, set a **Model override** like `llama3.1:8b`.
+2. Click **AI: Auto** in the top-right toolbar.
+3. **Provider** → `Ollama on my machine (local)`.
+4. **Local Ollama URL**: `http://localhost:11434`
+5. **Local model**: `llama3.1:8b` (or whatever you pulled)
+6. **Done**.
 
-### B.4 Test the worker directly (optional)
+Click "Enhance with AI" on the summary or an experience bullet. The first
+call warms the model (20–60 s on CPU); subsequent calls are quick.
+
+---
+
+## 5. (Optional) Run the edge worker locally
+
+Only needed if you want to develop / test the Cloudflare Worker proxy itself,
+or if you want to use OpenAI / Anthropic / Gemini / Groq while developing
+without deploying the worker to Cloudflare.
+
+### 5.1 Keep the SPA running
+
+Leave `npm run dev` running in **Terminal 1**.
+
+### 5.2 Start the worker in local mode
+
+In **Terminal 2** (PowerShell, in the repo root):
+
+```powershell
+npm run worker:dev:local
+```
+
+This uses `wrangler.dev.toml` (not the production `wrangler.toml`), which
+omits the Cloudflare Workers AI binding so no Cloudflare account login is
+required. It defaults to `PROVIDER=ollama` and
+`OLLAMA_URL=http://localhost:11434`.
+
+The worker binds on **http://localhost:8787**. Vite's dev server already
+proxies `/api/*` to `127.0.0.1:8787`, so the app will transparently route
+AI calls through the worker.
+
+In the UI, switch **AI Settings → Provider** back to `Auto (server default)`
+to use the worker instead of the direct-Ollama path.
+
+### 5.3 Using a cloud provider through the local worker
+
+To try Groq / OpenAI / Anthropic / Gemini while running the worker locally,
+create a **`.dev.vars`** file in the repo root (git-ignored):
+
+```ini
+# .dev.vars
+PROVIDER = "groq"
+GROQ_API_KEY = "gsk_..."
+```
+
+Swap in whichever key/provider you want:
+
+```ini
+PROVIDER = "openai"
+OPENAI_API_KEY = "sk-..."
+```
+
+```ini
+PROVIDER = "anthropic"
+ANTHROPIC_API_KEY = "sk-ant-..."
+```
+
+```ini
+PROVIDER = "gemini"
+GEMINI_API_KEY = "..."
+```
+
+Restart `npm run worker:dev:local`. Verify:
 
 ```powershell
 curl.exe http://localhost:8787/api/providers
-curl.exe -X POST http://localhost:8787/api/enhance `
-  -H "Content-Type: application/json" `
-  -d '{\"kind\":\"bullets\",\"notes\":\"fixed slow queries on the orders table\"}'
 ```
 
 ---
 
-## GPU acceleration (optional)
+## 6. Useful commands cheat sheet
 
-On Windows 11 with an NVIDIA GPU + recent Docker Desktop:
-
-1. Ensure your NVIDIA driver is current.
-2. In Docker Desktop → Settings → Resources → **enable GPU support**.
-3. Uncomment the `deploy.resources.reservations.devices` block for the `ollama`
-   service in `docker-compose.yml`:
-
-   ```yaml
-   deploy:
-     resources:
-       reservations:
-         devices:
-           - driver: nvidia
-             count: all
-             capabilities: [gpu]
-   ```
-
-4. `docker compose up --force-recreate ollama`
-
-Verify:
-
-```powershell
-docker compose exec ollama nvidia-smi
-```
-
-You should see your GPU listed. Generation speed for `llama3.1:8b` should jump
-from ~5 tok/s (CPU) to 40–80 tok/s (mid-range GPU).
-
----
-
-## Using cloud providers instead (OpenAI / Anthropic / Gemini / Groq)
-
-You don't have to use Ollama. Any cloud provider works the same way:
-
-1. Start only the web service:
-   ```powershell
-   docker compose up web
-   ```
-2. In the app, open **AI Settings** → switch the provider to OpenAI, Anthropic,
-   Gemini, or Groq.
-3. Because no worker is running locally, you'll need to proxy to a deployed
-   worker. Either:
-   - Deploy the worker once: `npx wrangler deploy` (requires Cloudflare login),
-     then set `VITE_AI_ENDPOINT=https://<your-worker>.workers.dev/api/enhance`
-     in a `.env.local` file before `docker compose up`; or
-   - Run the `worker` profile and store the API key as a local secret with a
-     `.dev.vars` file next to `wrangler.dev.toml`:
-
-     ```ini
-     # .dev.vars  (git-ignored)
-     GROQ_API_KEY = "gsk_..."
-     ```
-
-     Then edit `wrangler.dev.toml` to set `PROVIDER = "groq"`.
-
-Recommended free-tier cloud picks:
-- **Groq** — fastest, very generous free tier for Llama models.
-- **Gemini 1.5 Flash** — Google AI Studio free tier.
-- **Cloudflare Workers AI** — only when deployed (the local dev config does
-  not bind it to avoid requiring `wrangler login`).
-
----
-
-## Troubleshooting
-
-### The web container keeps restarting / port 5173 refuses connections
-- Port conflict with another Vite/Node app. Stop it or change the left side of
-  `"5173:5173"` in `docker-compose.yml` to a free port (e.g. `"5174:5173"`).
-
-### `npm install` is extremely slow or fails with network errors inside the container
-- Docker Desktop's DNS can be flaky. Docker Desktop → Settings → Resources →
-  Network → try enabling "Use Docker DNS" / reset.
-- Or bypass the container and run `npm install` on the Windows host once
-  (requires Node 20 locally), then restart compose; the host `node_modules`
-  will be masked by the named volume — so prefer fixing DNS.
-
-### "Enhance with AI" says "Could not reach local Ollama at http://localhost:11434"
-- Make sure the `ollama` container is up: `docker compose ps`.
-- Make sure `OLLAMA_ORIGINS=*` is set (it is, by default in the compose file).
-  If you changed it, browser requests will fail CORS.
-- If your browser auto-upgrades `http://localhost` to `https://`, either use a
-  different browser or disable HSTS for localhost.
-
-### Ollama is slow / OOM
-- Pull a smaller model: `docker compose exec ollama ollama pull phi3.5:3.8b`.
-- In the app's AI Settings, switch **Local model** to match.
-
-### WSL2 is eating all my RAM
-- Create `%UserProfile%\.wslconfig`:
-  ```ini
-  [wsl2]
-  memory=8GB
-  processors=4
-  swap=4GB
-  ```
-- Then `wsl --shutdown` and start Docker Desktop again.
-
-### `docker compose exec ollama ollama pull ...` errors with "exec failed"
-- Ollama container isn't healthy yet — wait 10–20 s after `docker compose up`,
-  or check `docker compose logs ollama`.
-
-### Git / Windows line endings break shell scripts
-- Inside the repo root:
-  ```powershell
-  git config core.autocrlf false
-  git rm --cached -r .
-  git reset --hard
-  ```
-
----
-
-## Cleaning up
-
-```powershell
-# Stop containers
-docker compose down
-
-# Remove everything, including downloaded models and node_modules cache
-docker compose down -v
-
-# Full wipe — images too
-docker compose down -v --rmi all
-```
-
-Downloaded models live in the named volume `resumebuilderai_ollama-data`. That
-volume also survives `docker compose down` (use `-v` to delete).
-
----
-
-## Summary cheat sheet
-
-| I want to… | Command |
+| Task | Command |
 |---|---|
-| Start (simple) | `docker compose up` |
-| Start (with worker) | `docker compose --profile worker up` |
-| Stop | `docker compose down` |
-| Pull model | `docker compose exec ollama ollama pull llama3.1:8b` |
-| List models | `docker compose exec ollama ollama list` |
-| Tail web logs | `docker compose logs -f web` |
-| Tail worker logs | `docker compose logs -f worker` |
-| GPU check | `docker compose exec ollama nvidia-smi` |
-| Reset everything | `docker compose down -v` |
+| Install deps | `npm install` |
+| Start SPA | `npm run dev` |
+| Start local worker | `npm run worker:dev:local` |
+| Production build | `npm run build` |
+| Preview prod build | `npm run preview` |
+| Pull a model | `ollama pull llama3.1:8b` |
+| List models | `ollama list` |
+| Remove a model | `ollama rm llama3.1:8b` |
+| Tail Ollama logs (when `ollama serve` is manual) | already in that window |
+
+---
+
+## 7. Troubleshooting
+
+### `npm install` fails with `EACCES` or `permission denied`
+Close any open terminals in the repo, delete `node_modules\` and
+`package-lock.json`, then retry. Or try:
+```powershell
+npm cache clean --force
+npm install
+```
+
+### Port 5173 already in use
+Something else is running. Either stop it or start Vite on a different port:
+```powershell
+npm run dev -- --port 5174
+```
+
+### "Enhance with AI" says it can't reach `http://localhost:11434`
+- Is Ollama running? Open the tray, make sure the icon is there.
+- Did you set `OLLAMA_ORIGINS=*` and **restart** the Ollama app?
+- Try `curl.exe http://localhost:11434/api/tags` from PowerShell — it should
+  return JSON. If not, the service isn't up.
+
+### Browser blocks the call as "mixed content"
+This only happens if you serve the app over HTTPS. For local dev, use
+`http://localhost:5173`, not `https://`.
+
+### Ollama is slow / uses all my CPU
+- Pick a smaller model: `ollama pull phi3.5:3.8b` and update the **Local model**
+  field in the app.
+- If you have an NVIDIA GPU, Ollama for Windows uses it automatically.
+  Confirm with `ollama ps` while a generation is running — it should show GPU
+  memory in use.
+
+### I installed a model but the app still fails
+Make sure the **Local model** value in AI Settings matches the tag you
+pulled exactly, including the `:8b` suffix.
+
+### I want the app available on my LAN (other devices)
+```powershell
+npm run dev -- --host 0.0.0.0
+```
+Then visit `http://<your-windows-ip>:5173` from the other device. Windows
+Defender Firewall may prompt the first time — allow it for private networks.
+
+### WSL / antivirus makes file-watching laggy
+Run the project from a native Windows folder (e.g. `C:\dev\resumebuilderai`),
+not from inside `\\wsl$\...`. Exclude the repo folder from real-time scanning
+in Microsoft Defender if reloads are sluggish.
+
+### I only want to build the SPA and serve it statically
+```powershell
+npm run build
+npm run preview      # serves dist/ on http://localhost:4173
+```
+Host the `dist/` folder anywhere (GitHub Pages, Cloudflare Pages, Vercel).
+Set `VITE_AI_ENDPOINT` before `npm run build` to point at your deployed
+worker, e.g. `https://resume-proxy.your-subdomain.workers.dev/api/enhance`.
+
+---
+
+## What's running where — mental model
+
+```
+Browser (Windows)
+  ├─ http://localhost:5173   ← Vite dev server (your app)
+  │     │
+  │     ├─ [direct path]   browser ──► http://localhost:11434 ──► Ollama.exe
+  │     │
+  │     └─ [worker path]   browser ──► /api/enhance
+  │                           └─ Vite proxy ──► http://localhost:8787 (wrangler dev)
+  │                                              └─ worker ──► Ollama / Groq / …
+  │
+  └─ No data ever leaves this machine in the direct path.
+     In the worker path, data leaves only if you configured a cloud provider.
+```
+
+Everything is stateless. Your resume data only lives in this browser's
+`localStorage`. Exporting PDF or DOCX builds the file in-memory and downloads
+it — no upload, no server file storage.

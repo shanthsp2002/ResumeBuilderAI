@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "worker:dev": "wrangler dev worker/index.ts",
+    "worker:dev:local": "wrangler dev --config wrangler.dev.toml",
     "worker:deploy": "wrangler deploy"
   },
   "dependencies": {
