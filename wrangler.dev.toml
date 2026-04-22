@@ -1,0 +1,11 @@
+# Local-dev-only wrangler config. Used by `docker compose --profile worker up`.
+# Differs from wrangler.toml by omitting the Cloudflare Workers AI binding so
+# `wrangler dev` does not require a Cloudflare account login.
+name = "resume-builder-ai-proxy-dev"
+main = "worker/index.ts"
+compatibility_date = "2024-10-01"
+
+[vars]
+PROVIDER = "ollama"
+# Overridden by docker-compose for in-network addressing.
+OLLAMA_URL = "http://host.docker.internal:11434"

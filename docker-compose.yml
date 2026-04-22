@@ -1,0 +1,77 @@
+# Local Docker setup. Primary path: `web` (Vite) + `ollama` only.
+# Advanced path: add the Cloudflare worker with `--profile worker`.
+#
+# Quick start (Windows PowerShell):
+#   docker compose up
+#   # then in another shell, once Ollama is healthy:
+#   docker compose exec ollama ollama pull llama3.1:8b
+#   # open http://localhost:5173 and pick "Ollama on my machine" in AI Settings.
+
+services:
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    environment:
+      # Make Vite accessible from the Windows host browser.
+      HOST: 0.0.0.0
+      CHOKIDAR_USEPOLLING: "true"       # reliable file-watch on WSL2 + bind mounts
+      WATCHPACK_POLLING: "true"
+      # Used only when the `worker` profile is also up; harmless otherwise.
+      VITE_WORKER_URL: "http://worker:8787"
+    volumes:
+      - .:/app
+      - web-node-modules:/app/node_modules
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    environment:
+      # Let the browser (different origin) call the API.
+      OLLAMA_ORIGINS: "*"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # --- Optional: NVIDIA GPU pass-through on Windows (Docker Desktop + WSL2) ---
+    # Uncomment and install the NVIDIA Container Toolkit per Docker's docs.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # Advanced: runs the Cloudflare Worker locally against the Ollama container.
+  # Enable with:  docker compose --profile worker up
+  # Uses wrangler.dev.toml so local dev does not require `wrangler login`.
+  worker:
+    image: node:20-alpine
+    working_dir: /app
+    profiles: ["worker"]
+    ports:
+      - "8787:8787"
+    environment:
+      OLLAMA_URL: "http://ollama:11434"
+      PROVIDER: "ollama"
+    volumes:
+      - .:/app
+      - worker-node-modules:/app/node_modules
+    command: >
+      sh -c "npm install --no-audit --no-fund &&
+             npx wrangler dev --config wrangler.dev.toml --ip 0.0.0.0 --port 8787"
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+volumes:
+  ollama-data:
+  web-node-modules:
+  worker-node-modules:
