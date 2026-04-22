@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useResumeStore } from '../../store/resumeStore';
 import { enhanceWithAI } from '../../lib/ai';
+import { useEnhanceOpts } from '../../lib/useEnhanceOpts';
 import { ProjectEntry } from '../../types/resume';
 
 function ProjectBullets({ entry }: { entry: ProjectEntry }) {
   const update = useResumeStore((s) => s.updateProject);
+  const enhanceOpts = useEnhanceOpts();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rough, setRough] = useState('');
@@ -20,7 +22,7 @@ function ProjectBullets({ entry }: { entry: ProjectEntry }) {
     setBusy(true);
     setError(null);
     try {
-      const result = await enhanceWithAI({ kind: 'bullets', notes: seed });
+      const result = await enhanceWithAI({ kind: 'bullets', notes: seed }, enhanceOpts);
       if (result.length) {
         setBullets(result);
         setRough('');

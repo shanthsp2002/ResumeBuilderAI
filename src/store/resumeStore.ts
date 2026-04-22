@@ -10,6 +10,21 @@ import {
   emptyResume,
   sampleResume,
 } from '../types/resume';
+import { ProviderId } from '../lib/ai';
+
+export interface AISettings {
+  provider: ProviderId;
+  model: string;
+  localOllamaUrl: string;
+  localOllamaModel: string;
+}
+
+const defaultAISettings = (): AISettings => ({
+  provider: 'auto',
+  model: '',
+  localOllamaUrl: 'http://localhost:11434',
+  localOllamaModel: 'llama3.1:8b',
+});
 
 const uid = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -18,6 +33,8 @@ const uid = () =>
 
 interface ResumeState {
   resume: Resume;
+  ai: AISettings;
+  setAISettings: (patch: Partial<AISettings>) => void;
   setPersonal: <K extends keyof Resume['personal']>(key: K, value: Resume['personal'][K]) => void;
   setTemplate: (template: TemplateId) => void;
   setAccentColor: (color: string) => void;
@@ -48,6 +65,9 @@ export const useResumeStore = create<ResumeState>()(
   persist(
     (set) => ({
       resume: emptyResume(),
+      ai: defaultAISettings(),
+
+      setAISettings: (patch) => set((s) => ({ ai: { ...s.ai, ...patch } })),
 
       setPersonal: (key, value) =>
         set((s) => ({ resume: { ...s.resume, personal: { ...s.resume.personal, [key]: value } } })),

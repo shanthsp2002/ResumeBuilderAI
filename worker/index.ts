@@ -1,19 +1,44 @@
 /**
  * Cloudflare Worker edge proxy for the AI enhance endpoint.
  *
- * Why this exists: the client must never see the provider API key. The worker
- * adds the key, enforces a strict system prompt, and validates the response
- * shape before returning it to the client.
+ * Multi-provider. Resolution order for the active provider:
+ *   1. `provider` field on the request body (client override) — must be one of the allowed values
+ *   2. `env.PROVIDER` (deploy-time default)
+ *   3. Auto-detect from whichever credential / binding is present:
+ *        Workers AI binding > Ollama URL > Groq > OpenAI > Anthropic > Gemini
  *
- * Configure one of these secrets via `wrangler secret put`:
- *   - OPENAI_API_KEY       (default provider)
- *   - ANTHROPIC_API_KEY    (set PROVIDER=anthropic)
- *   - GEMINI_API_KEY       (set PROVIDER=gemini)
+ * Configure with `wrangler secret put` (and bindings in wrangler.toml):
+ *   - Workers AI:   binding `AI` declared in wrangler.toml — no key needed
+ *   - Ollama:       OLLAMA_URL  (e.g. https://ollama.example.com or a tunnel)
+ *   - Groq:         GROQ_API_KEY
+ *   - OpenAI:       OPENAI_API_KEY
+ *   - Anthropic:    ANTHROPIC_API_KEY
+ *   - Gemini:       GEMINI_API_KEY
+ *
+ * Optional vars:
+ *   - PROVIDER   = workers-ai | ollama | groq | openai | anthropic | gemini
+ *   - MODEL      = provider-specific model id (overrides defaults)
+ *   - ALLOWED_ORIGIN = restrict CORS to your deployed origin
  */
 
+export type Provider =
+  | 'workers-ai'
+  | 'ollama'
+  | 'groq'
+  | 'openai'
+  | 'anthropic'
+  | 'gemini';
+
+interface WorkersAIBinding {
+  run: (model: string, input: Record<string, unknown>) => Promise<unknown>;
+}
+
 export interface Env {
-  PROVIDER?: 'openai' | 'anthropic' | 'gemini';
+  AI?: WorkersAIBinding;
+  PROVIDER?: Provider;
   MODEL?: string;
+  OLLAMA_URL?: string;
+  GROQ_API_KEY?: string;
   OPENAI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
@@ -25,6 +50,8 @@ type EnhanceKind = 'bullets' | 'summary';
 interface EnhanceRequest {
   kind: EnhanceKind;
   notes: string;
+  provider?: Provider;
+  model?: string;
   context?: {
     role?: string;
     company?: string;
@@ -34,7 +61,7 @@ interface EnhanceRequest {
 
 const SYSTEM_BULLETS = `You are an expert resume writer. Convert the user's rough notes into 3-5 professional, action-oriented resume bullet points.
 Rules:
-- Start each bullet with a strong past-tense verb (except current role which may use present tense).
+- Start each bullet with a strong past-tense verb (except a current role which may use present tense).
 - Include concrete metrics wherever possible (%, $, time saved, scale, headcount).
 - Apply the STAR method implicitly: Situation, Task, Action, Result.
 - Keep each bullet to a single sentence, at most 30 words.
@@ -52,6 +79,15 @@ Rules:
 Return ONLY a JSON object of the exact form: {"result": ["<summary paragraph>"]} — a single-element array, no commentary, no markdown fences.`;
 
 const MAX_NOTES = 4000;
+
+const DEFAULT_MODELS: Record<Provider, string> = {
+  'workers-ai': '@cf/meta/llama-3.1-8b-instruct',
+  ollama: 'llama3.1:8b',
+  groq: 'llama-3.1-8b-instant',
+  openai: 'gpt-4o-mini',
+  anthropic: 'claude-haiku-4-5-20251001',
+  gemini: 'gemini-1.5-flash',
+};
 
 function cors(env: Env): Record<string, string> {
   const origin = env.ALLOWED_ORIGIN ?? '*';
@@ -79,12 +115,112 @@ function buildUserPrompt(req: EnhanceRequest): string {
   return `${header}Notes:\n${req.notes}`;
 }
 
+function parseResult(content: string): string[] {
+  let trimmed = content.trim();
+  trimmed = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+
+  // Some local models leak prose around the JSON. Try to extract the first JSON object.
+  if (!trimmed.startsWith('{')) {
+    const match = trimmed.match(/\{[\s\S]*\}/);
+    if (match) trimmed = match[0];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error('Model returned non-JSON content.');
+  }
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { result?: unknown }).result)) {
+    throw new Error('Model JSON missing `result` array.');
+  }
+  const arr = (parsed as { result: unknown[] }).result;
+  return arr
+    .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    .map((s) => s.trim());
+}
+
+async function callWorkersAI(
+  system: string,
+  user: string,
+  env: Env,
+  model: string,
+): Promise<string[]> {
+  if (!env.AI) throw new Error('Workers AI binding `AI` not configured.');
+  const out = (await env.AI.run(model, {
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.3,
+  })) as { response?: string } | string;
+  const text = typeof out === 'string' ? out : out.response ?? '';
+  return parseResult(text);
+}
+
+async function callOllama(
+  system: string,
+  user: string,
+  env: Env,
+  model: string,
+): Promise<string[]> {
+  if (!env.OLLAMA_URL) throw new Error('OLLAMA_URL not configured.');
+  const url = new URL('/api/chat', env.OLLAMA_URL).toString();
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      format: 'json',
+      options: { temperature: 0.3 },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`Ollama error ${res.status}: ${await res.text()}`);
+  const data = (await res.json()) as { message?: { content?: string } };
+  return parseResult(data.message?.content ?? '');
+}
+
+async function callGroq(
+  system: string,
+  user: string,
+  env: Env,
+  model: string,
+): Promise<string[]> {
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.3,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`Groq error ${res.status}: ${await res.text()}`);
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  return parseResult(data.choices?.[0]?.message?.content ?? '');
+}
+
 async function callOpenAI(
   system: string,
   user: string,
   env: Env,
+  model: string,
 ): Promise<string[]> {
-  const model = env.MODEL ?? 'gpt-4o-mini';
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -105,16 +241,15 @@ async function callOpenAI(
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
   };
-  const content = data.choices?.[0]?.message?.content ?? '';
-  return parseResult(content);
+  return parseResult(data.choices?.[0]?.message?.content ?? '');
 }
 
 async function callAnthropic(
   system: string,
   user: string,
   env: Env,
+  model: string,
 ): Promise<string[]> {
-  const model = env.MODEL ?? 'claude-haiku-4-5-20251001';
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -134,7 +269,10 @@ async function callAnthropic(
   const data = (await res.json()) as {
     content?: Array<{ type: string; text?: string }>;
   };
-  const text = (data.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
+  const text = (data.content ?? [])
+    .filter((c) => c.type === 'text')
+    .map((c) => c.text ?? '')
+    .join('');
   return parseResult(text);
 }
 
@@ -142,8 +280,8 @@ async function callGemini(
   system: string,
   user: string,
   env: Env,
+  model: string,
 ): Promise<string[]> {
-  const model = env.MODEL ?? 'gemini-1.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
   const res = await fetch(url, {
     method: 'POST',
@@ -162,27 +300,65 @@ async function callGemini(
   return parseResult(text);
 }
 
-function parseResult(content: string): string[] {
-  const trimmed = content.trim().replace(/^```(?:json)?|```$/g, '').trim();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    throw new Error('Model returned non-JSON content.');
-  }
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { result?: unknown }).result)) {
-    throw new Error('Model JSON missing `result` array.');
-  }
-  const arr = (parsed as { result: unknown[] }).result;
-  return arr.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((s) => s.trim());
+function isProvider(value: unknown): value is Provider {
+  return (
+    value === 'workers-ai' ||
+    value === 'ollama' ||
+    value === 'groq' ||
+    value === 'openai' ||
+    value === 'anthropic' ||
+    value === 'gemini'
+  );
 }
 
-function resolveProvider(env: Env): Env['PROVIDER'] {
-  if (env.PROVIDER) return env.PROVIDER;
+function autoDetectProvider(env: Env): Provider | undefined {
+  if (env.AI) return 'workers-ai';
+  if (env.OLLAMA_URL) return 'ollama';
+  if (env.GROQ_API_KEY) return 'groq';
   if (env.OPENAI_API_KEY) return 'openai';
   if (env.ANTHROPIC_API_KEY) return 'anthropic';
   if (env.GEMINI_API_KEY) return 'gemini';
   return undefined;
+}
+
+function providerAvailable(provider: Provider, env: Env): boolean {
+  switch (provider) {
+    case 'workers-ai':
+      return !!env.AI;
+    case 'ollama':
+      return !!env.OLLAMA_URL;
+    case 'groq':
+      return !!env.GROQ_API_KEY;
+    case 'openai':
+      return !!env.OPENAI_API_KEY;
+    case 'anthropic':
+      return !!env.ANTHROPIC_API_KEY;
+    case 'gemini':
+      return !!env.GEMINI_API_KEY;
+  }
+}
+
+async function dispatch(
+  provider: Provider,
+  system: string,
+  user: string,
+  env: Env,
+  model: string,
+): Promise<string[]> {
+  switch (provider) {
+    case 'workers-ai':
+      return callWorkersAI(system, user, env, model);
+    case 'ollama':
+      return callOllama(system, user, env, model);
+    case 'groq':
+      return callGroq(system, user, env, model);
+    case 'openai':
+      return callOpenAI(system, user, env, model);
+    case 'anthropic':
+      return callAnthropic(system, user, env, model);
+    case 'gemini':
+      return callGemini(system, user, env, model);
+  }
 }
 
 export default {
@@ -191,6 +367,17 @@ export default {
       return new Response(null, { status: 204, headers: cors(env) });
     }
     const url = new URL(request.url);
+
+    if (url.pathname === '/api/providers' && request.method === 'GET') {
+      const all: Provider[] = ['workers-ai', 'ollama', 'groq', 'openai', 'anthropic', 'gemini'];
+      const available = all.filter((p) => providerAvailable(p, env));
+      return json(
+        { available, default: env.PROVIDER ?? autoDetectProvider(env) ?? null },
+        200,
+        env,
+      );
+    }
+
     if (url.pathname !== '/api/enhance' || request.method !== 'POST') {
       return json({ error: 'Not found' }, 404, env);
     }
@@ -212,29 +399,25 @@ export default {
       return json({ error: `notes too long (max ${MAX_NOTES} chars)` }, 413, env);
     }
 
-    const provider = resolveProvider(env);
-    if (!provider) return json({ error: 'AI provider not configured' }, 500, env);
+    const requested = isProvider(body.provider) ? body.provider : undefined;
+    const provider = requested ?? env.PROVIDER ?? autoDetectProvider(env);
 
+    if (!provider) {
+      return json({ error: 'No AI provider configured on the server.' }, 500, env);
+    }
+    if (!providerAvailable(provider, env)) {
+      return json({ error: `Provider "${provider}" is not configured on the server.` }, 400, env);
+    }
+
+    const model = (typeof body.model === 'string' && body.model.trim()) || env.MODEL || DEFAULT_MODELS[provider];
     const system = body.kind === 'bullets' ? SYSTEM_BULLETS : SYSTEM_SUMMARY;
     const user = buildUserPrompt(body);
 
     try {
-      let result: string[];
-      switch (provider) {
-        case 'anthropic':
-          result = await callAnthropic(system, user, env);
-          break;
-        case 'gemini':
-          result = await callGemini(system, user, env);
-          break;
-        case 'openai':
-        default:
-          result = await callOpenAI(system, user, env);
-          break;
-      }
-      return json({ result }, 200, env);
+      const result = await dispatch(provider, system, user, env, model);
+      return json({ result, provider, model }, 200, env);
     } catch (e) {
-      return json({ error: (e as Error).message }, 502, env);
+      return json({ error: (e as Error).message, provider, model }, 502, env);
     }
   },
 };

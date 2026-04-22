@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useResumeStore } from '../../store/resumeStore';
 import { enhanceWithAI } from '../../lib/ai';
+import { useEnhanceOpts } from '../../lib/useEnhanceOpts';
 
 export function PersonalForm() {
   const personal = useResumeStore((s) => s.resume.personal);
   const setPersonal = useResumeStore((s) => s.setPersonal);
+  const enhanceOpts = useEnhanceOpts();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,11 +18,14 @@ export function PersonalForm() {
     setError(null);
     setBusy(true);
     try {
-      const result = await enhanceWithAI({
-        kind: 'summary',
-        notes: personal.summary,
-        context: { targetRole: personal.title },
-      });
+      const result = await enhanceWithAI(
+        {
+          kind: 'summary',
+          notes: personal.summary,
+          context: { targetRole: personal.title },
+        },
+        enhanceOpts,
+      );
       if (result[0]) setPersonal('summary', result[0]);
     } catch (e) {
       setError((e as Error).message);

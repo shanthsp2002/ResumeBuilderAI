@@ -2,13 +2,21 @@ name = "resume-builder-ai-proxy"
 main = "worker/index.ts"
 compatibility_date = "2024-10-01"
 
-# Set one of these via `wrangler secret put`:
+# Default provider: Cloudflare Workers AI (zero extra cost on the free tier;
+# stays on the same edge as the proxy). The `AI` binding is auto-injected.
+[ai]
+binding = "AI"
+
+# Optional defaults — uncomment to lock the deployment to a specific provider
+# or model, and to restrict CORS to your deployed origin.
+# [vars]
+# PROVIDER = "workers-ai"        # workers-ai | ollama | groq | openai | anthropic | gemini
+# MODEL    = "@cf/meta/llama-3.1-8b-instruct"
+# ALLOWED_ORIGIN = "https://your-domain.example"
+
+# Set provider credentials with `wrangler secret put`:
+#   wrangler secret put OLLAMA_URL          # https://ollama.example.com (or a tunnel)
+#   wrangler secret put GROQ_API_KEY        # https://console.groq.com (free tier)
 #   wrangler secret put OPENAI_API_KEY
 #   wrangler secret put ANTHROPIC_API_KEY
 #   wrangler secret put GEMINI_API_KEY
-#
-# Optional: restrict CORS to your deployed origin.
-# [vars]
-# ALLOWED_ORIGIN = "https://your-domain.example"
-# PROVIDER = "openai"
-# MODEL = "gpt-4o-mini"

@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useResumeStore } from '../../store/resumeStore';
 import { enhanceWithAI } from '../../lib/ai';
+import { useEnhanceOpts } from '../../lib/useEnhanceOpts';
 import { ExperienceEntry } from '../../types/resume';
 
 function BulletEditor({ entry }: { entry: ExperienceEntry }) {
   const setBullets = useResumeStore((s) => s.setExperienceBullets);
+  const enhanceOpts = useEnhanceOpts();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rough, setRough] = useState('');
@@ -30,11 +32,14 @@ function BulletEditor({ entry }: { entry: ExperienceEntry }) {
     setBusy(true);
     setError(null);
     try {
-      const result = await enhanceWithAI({
-        kind: 'bullets',
-        notes: seed,
-        context: { role: entry.role, company: entry.company },
-      });
+      const result = await enhanceWithAI(
+        {
+          kind: 'bullets',
+          notes: seed,
+          context: { role: entry.role, company: entry.company },
+        },
+        enhanceOpts,
+      );
       if (result.length) {
         setBullets(entry.id, result);
         setRough('');

@@ -1,18 +1,23 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useResumeStore } from '../store/resumeStore';
 import { templates } from '../templates';
 import { TemplateId } from '../types/resume';
+import { AISettings } from './AISettings';
+import { providers } from '../lib/ai';
 
 const accentPresets = ['#2563eb', '#0f766e', '#9333ea', '#dc2626', '#ea580c', '#111827'];
 
 export function Toolbar() {
   const resume = useResumeStore((s) => s.resume);
+  const ai = useResumeStore((s) => s.ai);
   const setTemplate = useResumeStore((s) => s.setTemplate);
   const setAccent = useResumeStore((s) => s.setAccentColor);
   const loadSample = useResumeStore((s) => s.loadSample);
   const reset = useResumeStore((s) => s.reset);
   const importJSON = useResumeStore((s) => s.importJSON);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+  const activeProvider = providers.find((p) => p.id === ai.provider);
 
   const exportJSON = () => {
     const blob = new Blob([JSON.stringify(resume, null, 2)], { type: 'application/json' });
@@ -80,6 +85,9 @@ export function Toolbar() {
         </div>
 
         <div className="flex gap-1">
+          <button className="btn-ghost" onClick={() => setAiOpen(true)} title={activeProvider?.description}>
+            AI: {activeProvider?.label ?? 'Auto'}
+          </button>
           <button className="btn-ghost" onClick={loadSample}>
             Load sample
           </button>
@@ -106,6 +114,7 @@ export function Toolbar() {
           />
         </div>
       </div>
+      {aiOpen && <AISettings onClose={() => setAiOpen(false)} />}
     </header>
   );
 }
